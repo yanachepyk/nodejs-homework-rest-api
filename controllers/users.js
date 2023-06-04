@@ -5,6 +5,8 @@ const path = require("path");
 const fs = require("fs/promises");
 const Jimp = require("jimp");
 const User = require("../models/user");
+const { nanoid } = require("nanoid");
+const { sendVerificationEmail } = require("../utils");
 const { SECRET_KEY } = process.env;
 
 const register = async ({ body }, res, next) => {
@@ -17,12 +19,16 @@ const register = async ({ body }, res, next) => {
     }
 
     const hashPassword = await bcrypt.hash(password, 10);
+    const verificationToken = nanoid();
     const avatarURL = gravatar.url(email, { s: "250" });
     const { email: newEmail, subscription } = await User.create({
       ...body,
       avatarURL,
+      verificationToken,
       password: hashPassword,
     });
+
+    await sendVerificationEmail({ email, verificationToken });
 
     res.status(201).json({
       user: {
@@ -48,6 +54,10 @@ const login = async ({ body }, res, next) => {
 
     if (!comparedPassword) {
       res.status(401).json({ message: "Email or password is wrong" });
+    }
+
+    if (!user.verify) {
+      res.status(401).json({ message: "Email is not verified" });
     }
 
     const token = jwt.sign({ id: user._id }, SECRET_KEY, { expiresIn: "12h" });
@@ -132,11 +142,50 @@ const updateAvatar = async (req, res, next) => {
   }
 };
 
+const verifyEmail = async (req, res, next) => {
+  try {
+    const {verificationToken} = req.params;
+    const user = await User.findOne({verificationToken});
+  
+    if (!user) {
+      res.status(404).json({message: "User not found"});
+    }
+
+    await User.findByIdAndUpdate(user._id, {
+      verificationToken: null,
+      verify: true
+    });
+
+    res.status(200).json({message: "Verification successful"});
+  } catch (error) {
+    next(error);
+  }
+};
+
+const resendVerificationEmail = async (req, res, next) => {
+  try {
+    const {email} = req.body;
+    const {verify, verificationToken} = await User.findOne({email});
+
+    if (verify) {
+      res.status(400).json({ message: "Verification has already been passed" });
+    }
+
+    await sendVerificationEmail({ email, verificationToken });
+
+    res.status(200).json({ message: "Verification email sent" });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   register,
   login,
   logout,
   getCurrentUser,
   updateSubscription,
-  updateAvatar
+  updateAvatar,
+  verifyEmail,
+  resendVerificationEmail
 };
